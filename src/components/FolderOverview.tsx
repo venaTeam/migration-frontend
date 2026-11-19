@@ -149,7 +149,7 @@ export function FolderOverview({
     <div className="folder-overview">
       <div className="folder-review-header">
         <button type="button" className="secondary" onClick={onBack}>
-          ← Load a different rule / folder
+          ↩︎ Load a different rule / folder
         </button>
       </div>
       {error && <div className="card error">{error}</div>}

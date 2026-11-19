@@ -86,7 +86,7 @@ export interface FolderRuleSummary {
   uid: string;
   title: string;
   rule_url: string;
-  /** True when the backend registry says this v1 rule was already migrated and its v2 copy exists. */
+  /** True when the backend registry says this v1 rule was already migrated and its v2 copy still exists. */
   migrated?: boolean;
 }
 

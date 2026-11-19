@@ -418,11 +418,13 @@ function App() {
     const extraAnnotations: Record<string, string> = {};
     for (const field of result.fields) {
       if (field.observed_value == null) continue;
-      if (field.location === "label") {
-        labels[field.name] = field.observed_value;
-      } else {
-        annotations[field.name] = field.observed_value;
+      if (field.name === "Appchi-$operator") {
+        labels[field.observed_value] = "true";
+        continue;
       }
+      if (field.location === "label") labels[field.name] = field.observed_value;
+      else annotations[field.name] = field.observed_value;
+      
     }
     if (labels["Send-Alert"] == null) labels["Send-Alert"] = "true";
     // The verdicts only cover schema fields; anything else the rule carries
@@ -745,7 +747,7 @@ function App() {
 
     if (missingByRule.length > 0) {
       const messages = missingByRule.map(
-        (r) => `rule ${r.index + 1} (${r.title}) — ${r.fields.join(", ")}`
+        (r) => `rule ${r.index + 1} (${r.title}) - ${r.fields.join(", ")}`
       );
       setCloneError(messages.join("; "));
       return null;
@@ -880,7 +882,7 @@ function App() {
             <div className="card create-new-option">
               <h3>Create a brand-new v2 rule</h3>
               <p className="help-text">
-                Instead of migrating an existing rule, create a new v2 alert rule skeleton in a folder and fil
+                Instead of migrating an existing rule, create a new v2 alert rule skeleton in a folder and fill in the standart fields.
               </p>
               <button onClick={handleStartCreateRule} className="secondary">
                 Create new v2 rule
@@ -964,7 +966,7 @@ function App() {
             {overviewFolderUrl && (
               <div className="form-back">
                 <button type="button" onClick={handleReturnFromForm} className="secondary">
-                  ← Back to folder
+                  ↩︎ Back to folder
                 </button>
               </div>
             )}

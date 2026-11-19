@@ -85,7 +85,7 @@ export const StandardForm = forwardRef<StandardFormRef, StandardFormProps>(
         }
       }
       load();
-    }, []);
+    }, [evaluation, operator, initialValues]);
 
     // The Appchi-$operator field is a notification-policy dropdown. Without
     // this fetch it renders with zero options and is permanently disabled
@@ -165,7 +165,7 @@ export const StandardForm = forwardRef<StandardFormRef, StandardFormProps>(
         {onReturn && (
           <div className="form-back">
             <button type="button" onClick={onReturn} className="secondary">
-              ← Back to folder
+              ↩︎ Back to folder
             </button>
           </div>
         )}
