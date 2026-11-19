@@ -882,7 +882,7 @@ function App() {
             <div className="card create-new-option">
               <h3>Create a brand-new v2 rule</h3>
               <p className="help-text">
-                Instead of migrating an existing rule, create a new v2 alert rule skeleton in a folder and fill in the standart fields.
+                Instead of migrating an existing rule, create a new v2 alert rule skeleton in a folder and fill in the standard fields.
               </p>
               <button onClick={handleStartCreateRule} className="secondary">
                 Create new v2 rule
