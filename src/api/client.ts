@@ -96,6 +96,30 @@ export interface ClassifiedFolderRules {
   v2: FolderRuleSummary[];
 }
 
+export interface RuleListSkip {
+  rule_url: string;
+  reason: "invalid_url" | "not_found" | "forbidden" | "already_v2" | "migrated";
+  message: string;
+}
+
+export interface RuleListResponse {
+  rules: FolderRuleSummary[];
+  skipped: RuleListSkip[];
+}
+
+/** Several rules from one link, walked like a folder. */
+export async function loadRuleList(ruleUrls: string[]): Promise<RuleListResponse> {
+  const response = await apiFetch("/api/rules/load-list", {
+    method: "POST",
+    body: JSON.stringify({ rule_urls: ruleUrls }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: "Failed to load rules" }));
+    throw new Error(error.message || "Failed to load rules");
+  }
+  return response.json();
+}
+
 export async function loadFolderClassified(folderUrl: string): Promise<ClassifiedFolderRules> {
   const response = await apiFetch("/api/rules/load-folder-classified", {
     method: "POST",

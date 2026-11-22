@@ -55,6 +55,8 @@ export interface EvaluateResponse {
   fields: FieldVerdict[];
   /** True when the registry says this rule was already migrated (single-rule load warning, plan §7.3). */
   migrated?: boolean;
+  /** Grafana folder the rule lives in; drives "View entire folder". */
+  folder_uid?: string | null;
 }
 
 export type FieldState =

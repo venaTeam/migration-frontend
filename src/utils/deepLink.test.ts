@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_LINK_RULES,
   clearStashedTarget,
+  folderUrlFor,
   hrefWithTarget,
   isHttpUrl,
   parseDeepLink,
@@ -92,9 +94,29 @@ describe("parseDeepLink", () => {
     expect(result.status).toBe("invalid");
   });
 
-  it("rejects several rule URLs until the list endpoint exists", () => {
-    const result = parseDeepLink(search({ rule_url: [RULE, `${RULE}2`] }));
+  it("reads several rule URLs as a list, in order and without duplicates", () => {
+    const second = "https://grafana.example/alerting/grafana/def456/view";
+    expect(parseDeepLink(search({ rule_url: [RULE, second, RULE] }))).toEqual({
+      status: "ok",
+      target: { kind: "rules", urls: [RULE, second] },
+    });
+  });
+
+  it("treats a repeated single rule URL as one rule", () => {
+    expect(parseDeepLink(search({ rule_url: [RULE, RULE] }))).toEqual({
+      status: "ok",
+      target: { kind: "rule", url: RULE },
+    });
+  });
+
+  it("rejects a list containing a non-http(s) URL", () => {
+    const result = parseDeepLink(search({ rule_url: [RULE, "javascript:alert(1)"] }));
     expect(result.status).toBe("invalid");
+  });
+
+  it("rejects a list longer than the limit", () => {
+    const urls = Array.from({ length: MAX_LINK_RULES + 1 }, (_, i) => `${RULE}?n=${i}`);
+    expect(parseDeepLink(search({ rule_url: urls })).status).toBe("invalid");
   });
 });
 
@@ -127,6 +149,17 @@ describe("hrefWithTarget", () => {
     expect(href).toBe("/?keep=1");
   });
 
+  it("writes one rule_url param per rule in a list", () => {
+    const second = "https://grafana.example/alerting/grafana/def456/view";
+    const href = hrefWithTarget(base, { kind: "rules", urls: [RULE, second] });
+    const url = new URL(href, base);
+    expect(url.searchParams.getAll("rule_url")).toEqual([RULE, second]);
+    expect(parseDeepLink(url.search)).toEqual({
+      status: "ok",
+      target: { kind: "rules", urls: [RULE, second] },
+    });
+  });
+
   it("round-trips through parseDeepLink", () => {
     const href = hrefWithTarget(base, { kind: "rule", url: RULE });
     const url = new URL(href, base);
@@ -137,6 +170,21 @@ describe("hrefWithTarget", () => {
   });
 });
 
+describe("folderUrlFor", () => {
+  it("builds a Grafana folder URL on the rule's host", () => {
+    expect(folderUrlFor("fold1", RULE)).toBe("https://grafana.example/dashboards/f/fold1");
+  });
+
+  it("encodes the folder UID", () => {
+    expect(folderUrlFor("a/b", RULE)).toBe("https://grafana.example/dashboards/f/a%2Fb");
+  });
+
+  it("falls back to the bare UID without an http(s) rule URL", () => {
+    expect(folderUrlFor("fold1", "abc123")).toBe("fold1");
+    expect(folderUrlFor("fold1", undefined)).toBe("fold1");
+  });
+});
+
 describe("stash", () => {
   it("stores, reads and clears a target", () => {
     const storage = memoryStorage();
@@ -144,6 +192,17 @@ describe("stash", () => {
     stashTarget({ kind: "folder", url: FOLDER }, storage);
     expect(readStashedTarget(storage)).toEqual({ kind: "folder", url: FOLDER });
     clearStashedTarget(storage);
+    expect(readStashedTarget(storage)).toBeNull();
+  });
+
+  it("stores and reads a rule list", () => {
+    const storage = memoryStorage();
+    stashTarget({ kind: "rules", urls: [RULE, FOLDER] }, storage);
+    expect(readStashedTarget(storage)).toEqual({ kind: "rules", urls: [RULE, FOLDER] });
+    storage.setItem(
+      "migration.deepLinkTarget",
+      JSON.stringify({ kind: "rules", urls: [RULE, "javascript:alert(1)"] })
+    );
     expect(readStashedTarget(storage)).toBeNull();
   });
 

@@ -14,6 +14,7 @@ import {
   fetchStandardSchema,
   loadFolderClassified,
   loadRule,
+  loadRuleList,
   logout,
   setUnauthorizedHandler,
   updateRuleView,
@@ -21,6 +22,7 @@ import {
 import { buildRulePayload, validateFormValues } from "./utils/ruleHelpers";
 import {
   clearStashedTarget,
+  folderUrlFor,
   hrefWithTarget,
   isHttpUrl,
   parseDeepLink,
@@ -29,7 +31,7 @@ import {
   type DeepLinkTarget,
 } from "./utils/deepLink";
 import type { EvaluateResponse, StandardSchema } from "./types";
-import type { ClassifiedFolderRules, FolderRuleSummary } from "./api/client";
+import type { ClassifiedFolderRules, FolderRuleSummary, RuleListSkip } from "./api/client";
 
 type View =
   | "checking"
@@ -92,6 +94,8 @@ function App() {
 
   const [folderRules, setFolderRules] = useState<FolderRuleSummary[] | null>(null);
   const [folderIndex, setFolderIndex] = useState<number>(0);
+  // Rules a several-rule link couldn't include (migrated, no access, ...).
+  const [listSkipped, setListSkipped] = useState<RuleListSkip[]>([]);
   // The migrated rule currently shown on the notice card (migrated-notice view).
   const [noticeRule, setNoticeRule] = useState<FolderRuleSummary | null>(null);
   const [operator, setOperator] = useState<string | undefined>(undefined);
@@ -149,8 +153,11 @@ function App() {
     else clearStashedTarget();
   };
 
-  const openTarget = (target: DeepLinkTarget) =>
-    target.kind === "rule" ? handleLoadRule(target.url) : handleLoadFolder(target.url);
+  const openTarget = (target: DeepLinkTarget) => {
+    if (target.kind === "rule") return handleLoadRule(target.url);
+    if (target.kind === "rules") return handleLoadRuleList(target.urls);
+    return handleLoadFolder(target.url);
+  };
 
   // Open the link once on page load. Without a session the load answers 401,
   // the login view shows, and handleLogin reopens the target.
@@ -234,6 +241,7 @@ function App() {
     setSyntheticEvaluation(null);
     setFolderRules(null);
     setFolderIndex(0);
+    setListSkipped([]);
     setOperator(undefined);
     setDrafts({});
     setCreatedRuleUids(new Set());
@@ -307,6 +315,53 @@ function App() {
       // opens normally. A migrated rule gets a warning banner above the form.
       setView("operator");
     }
+  };
+
+  // Several rules from one link: walked like a folder ("Rule 1 of N",
+  // Previous/Next, Create all). The backend leaves out rules that can't be
+  // migrated and says why.
+  const handleLoadRuleList = async (ruleUrls: string[]) => {
+    setLinkTarget({ kind: "rules", urls: ruleUrls });
+    resetFormState();
+    setFolderRules(null);
+    setFolderIndex(0);
+    setOperator(undefined);
+    setDrafts({});
+    setCreatedRuleUids(new Set());
+    setListSkipped([]);
+    setLoading(true);
+    let list;
+    try {
+      list = await loadRuleList(ruleUrls);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load rules");
+      setLoading(false);
+      return;
+    }
+    setLoading(false);
+    setListSkipped(list.skipped);
+    if (list.rules.length === 0) {
+      setError("None of the rules in this link can be migrated. See the reasons below.");
+      return;
+    }
+    setFolderRules(list.rules);
+    const first = list.rules[0];
+    const result = await loadRuleBySummary(first);
+    if (result && !("failed" in result)) {
+      setOperator(extractOperator(result));
+      setView("operator");
+    } else {
+      // Same fallback as a failed Previous/Next: the notice card shows the
+      // error and keeps the nav to the other rules.
+      setNoticeRule(first);
+      setView("migrated-notice");
+    }
+  };
+
+  const handleViewEntireFolder = () => {
+    if (!evaluation?.folder_uid) return;
+    const ruleUrl = linkTarget?.kind === "rule" ? linkTarget.url : undefined;
+    void handleLoadFolder(folderUrlFor(evaluation.folder_uid, ruleUrl));
   };
 
   // "Load into migration form" from the v2 review view is replaced by the
@@ -915,14 +970,27 @@ function App() {
 
   // Login-page line when a rule/folder is waiting to open. The rule's name is
   // never taken from the link: anyone can edit a link.
-  const fromInitialLink = initialLink.status === "ok" && initialLink.target.url === linkTarget?.url;
-  const loginNotice = !linkTarget
-    ? undefined
-    : fromInitialLink
-    ? linkTarget.kind === "rule"
-      ? "Log in to open the rule you clicked in alerts-bi."
-      : "Log in to open the folder from your link."
-    : `Log in to reopen the ${linkTarget.kind} you had open.`;
+  const fromInitialLink =
+    initialLink.status === "ok" && JSON.stringify(initialLink.target) === JSON.stringify(linkTarget);
+  const loginNotice = linkTarget
+    ? (fromInitialLink ? LINK_LOGIN_NOTICE : REOPEN_LOGIN_NOTICE)[linkTarget.kind]
+    : undefined;
+
+  const listMode = linkTarget?.kind === "rules";
+  const skippedCard = listMode && listSkipped.length > 0 && (
+    <div className="card">
+      <h3>
+        {listSkipped.length} rule{listSkipped.length === 1 ? "" : "s"} from your link left out
+      </h3>
+      <ul>
+        {listSkipped.map((s) => (
+          <li key={s.rule_url}>
+            {s.message} <span className="help-text">({s.rule_url})</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 
   return (
     <div className="app">
@@ -956,6 +1024,7 @@ function App() {
               </button>
             </div>
             {error && <div className="card error">{error}</div>}
+            {skippedCard}
           </>
         )}
         {view === "create-input" && (
@@ -1063,6 +1132,7 @@ function App() {
                 </div>
               </div>
             )}
+            {skippedCard}
             <div className="card migrated-notice">
               {loading ? (
                 <>
@@ -1162,6 +1232,9 @@ function App() {
                 </div>
               </div>
             )}
+            {skippedCard}
+            {/* "View entire folder" failed: the rule's form stays open. */}
+            {!isFolderMode && evaluation && error && <div className="card error">{error}</div>}
             {/* Rule load in flight or failed: evaluation is null, the form
                 can't render — show loading/error with the nav intact. */}
             {!evaluation && loading && <div className="card">Loading rule...</div>}
@@ -1183,6 +1256,8 @@ function App() {
               ruleCreated={evaluation ? createdRuleUids.has(evaluation.rule_uid) : false}
               destFolderUrl={destFolderUrl}
               onDestFolderUrlChange={setDestFolderUrl}
+              onViewFolder={!isFolderMode && evaluation.folder_uid ? handleViewEntireFolder : undefined}
+              viewFolderLoading={loading}
             />
             )}
             {/* Batch boundary (§7.2): the batch card sits on the last
@@ -1219,8 +1294,9 @@ function App() {
                   </button>
                 </div>
                 <p className="help-text">
-                  This will create a v2 rule for every not-yet-migrated rule in the folder. The
-                  second button also deletes each original rule after its v2 copy is created.
+                  This will create a v2 rule for every not-yet-migrated rule in{" "}
+                  {listMode ? "this list" : "the folder"}. The second button also deletes each
+                  original rule after its v2 copy is created.
                 </p>
                 <p className="help-text danger-text">
                   The delete action is destructive and cannot be undone.
@@ -1264,6 +1340,18 @@ function App() {
     </div>
   );
 }
+
+const LINK_LOGIN_NOTICE: Record<DeepLinkTarget["kind"], string> = {
+  rule: "Log in to open the rule you clicked in alerts-bi.",
+  rules: "Log in to open the rules you selected in alerts-bi.",
+  folder: "Log in to open the folder from your link.",
+};
+
+const REOPEN_LOGIN_NOTICE: Record<DeepLinkTarget["kind"], string> = {
+  rule: "Log in to reopen the rule you had open.",
+  rules: "Log in to reopen the rules you had open.",
+  folder: "Log in to reopen the folder you had open.",
+};
 
 function extractOperator(evaluation: EvaluateResponse): string | undefined {
   return evaluation.fields.find((f) => f.name === "Appchi-$operator")?.observed_value ?? undefined;
