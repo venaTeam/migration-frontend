@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CreateRuleInput } from "./components/CreateRuleInput";
 import { FolderOverview } from "./components/FolderOverview";
 import { LoginForm } from "./components/LoginForm";
@@ -14,13 +14,21 @@ import {
   fetchStandardSchema,
   loadFolderClassified,
   loadRule,
+  loadRuleList,
   logout,
   setUnauthorizedHandler,
   updateRuleView,
 } from "./api/client";
 import { buildRulePayload, validateFormValues } from "./utils/ruleHelpers";
+import {
+  folderUrlFor,
+  hrefWithTarget,
+  isHttpUrl,
+  parseDeepLink,
+  type DeepLinkTarget,
+} from "./utils/deepLink";
 import type { EvaluateResponse, StandardSchema } from "./types";
-import type { ClassifiedFolderRules, FolderRuleSummary } from "./api/client";
+import type { ClassifiedFolderRules, FolderRuleSummary, RuleListSkip } from "./api/client";
 
 type View =
   | "checking"
@@ -64,8 +72,22 @@ function App() {
   // the first API call answers 401 and the central handler in apiFetch
   // drops to the login view — no mount-time probe needed.
   const [view, setView] = useState<View>("load");
+  // The ?rule_url= / ?folder_url= the page was opened with (e.g. from alerts-bi).
+  const [initialLink] = useState(() => parseDeepLink(window.location.search));
+  // What the address bar points at: the rule/folder being viewed, kept across a
+  // 401 so it reopens after login. Cleared on the way back to the paste box.
+  const [linkTarget, setLinkTargetState] = useState<DeepLinkTarget | null>(
+    initialLink.status === "ok" ? initialLink.target : null
+  );
+  const linkOpened = useRef(false);
+  // A rule or folder has been shown at least once (login text says "reopen").
+  const targetShown = useRef(false);
+  // Set by the 401 handler: a failed load must not replace the login view.
+  const sessionLost = useRef(false);
   const [evaluation, setEvaluation] = useState<EvaluateResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(
+    initialLink.status === "invalid" ? initialLink.message : null
+  );
   const [loading, setLoading] = useState(false);
   const [cloneLoading, setCloneLoading] = useState(false);
   const [cloneError, setCloneError] = useState<string | null>(null);
@@ -73,6 +95,8 @@ function App() {
 
   const [folderRules, setFolderRules] = useState<FolderRuleSummary[] | null>(null);
   const [folderIndex, setFolderIndex] = useState<number>(0);
+  // Rules a several-rule link couldn't include (migrated, no access, ...).
+  const [listSkipped, setListSkipped] = useState<RuleListSkip[]>([]);
   // The migrated rule currently shown on the notice card (migrated-notice view).
   const [noticeRule, setNoticeRule] = useState<FolderRuleSummary | null>(null);
   const [operator, setOperator] = useState<string | undefined>(undefined);
@@ -119,15 +143,46 @@ function App() {
   // racing loads can pair rule A's content with rule B's header.
   const editingBlocked = loading || reviewRuleLoading;
 
+  const setLinkTarget = (target: DeepLinkTarget | null) => {
+    setLinkTargetState(target);
+    try {
+      window.history.replaceState(window.history.state, "", hrefWithTarget(window.location.href, target));
+    } catch {
+      // Address bar not updated; in-app state is still correct.
+    }
+  };
+
+  const openTarget = (target: DeepLinkTarget) => {
+    if (target.kind === "rule") return handleLoadRule(target.url);
+    if (target.kind === "rules") return handleLoadRuleList(target.urls);
+    return handleLoadFolder(target.url);
+  };
+
+  // Open the link once on page load. Without a session the load answers 401,
+  // the login view shows, and handleLogin reopens the target.
+  useEffect(() => {
+    if (linkOpened.current) return;
+    linkOpened.current = true;
+    if (initialLink.status === "ok") {
+      void openTarget(initialLink.target);
+    } else {
+      // No link (or a bad one, already shown as the error): plain paste box.
+      setLinkTarget(null);
+    }
+  }, []);
+
   const handleLogin = () => {
+    sessionLost.current = false;
     setView("load");
     setError(null);
+    if (linkTarget) void openTarget(linkTarget);
   };
 
   // Any API request answered 401: the backend session is gone (expired or
   // backend restarted) — land on the login view with a clear message
   // instead of a raw error. State resets like a logout.
   setUnauthorizedHandler(() => {
+    sessionLost.current = true;
     setView("login");
     setError("Session expired or invalid. Please log in again.");
     setEvaluation(null);
@@ -150,6 +205,7 @@ function App() {
     // Destroy the SERVER session too — it holds the Grafana password.
     // Fire-and-forget: sign-out must proceed even if the call fails.
     void logout().catch(() => {});
+    setLinkTarget(null);
     setView("login");
     setEvaluation(null);
     setError(null);
@@ -185,6 +241,7 @@ function App() {
     setSyntheticEvaluation(null);
     setFolderRules(null);
     setFolderIndex(0);
+    setListSkipped([]);
     setOperator(undefined);
     setDrafts({});
     setCreatedRuleUids(new Set());
@@ -197,6 +254,7 @@ function App() {
       setView("folder-overview");
       void refreshOverview();
     } else {
+      setLinkTarget(null);
       setView("load");
     }
   };
@@ -208,6 +266,7 @@ function App() {
       setView("folder-overview");
       void refreshOverview();
     } else {
+      setLinkTarget(null);
       setView("load");
     }
   };
@@ -242,6 +301,8 @@ function App() {
   };
 
   const handleLoadRule = async (ruleUrl: string) => {
+    // A pasted UID has no URL to keep in the address bar.
+    setLinkTarget(isHttpUrl(ruleUrl) ? { kind: "rule", url: ruleUrl } : null);
     setFolderRules(null);
     setFolderIndex(0);
     setOperator(undefined);
@@ -249,6 +310,7 @@ function App() {
     setCreatedRuleUids(new Set());
     const result = await loadRuleBySummary({ uid: "", title: "", rule_url: ruleUrl });
     if (result && !("failed" in result)) {
+      targetShown.current = true;
       setOperator(extractOperator(result));
       // Single rule by URL (plan §7.3): reviewing is legitimate, so the form
       // opens normally. A migrated rule gets a warning banner above the form.
@@ -256,10 +318,72 @@ function App() {
     }
   };
 
+  // Several rules from one link: walked like a folder ("Rule 1 of N",
+  // Previous/Next, Create all). The backend leaves out rules that can't be
+  // migrated and says why.
+  const handleLoadRuleList = async (ruleUrls: string[]) => {
+    setLinkTarget({ kind: "rules", urls: ruleUrls });
+    resetFormState();
+    setFolderRules(null);
+    setFolderIndex(0);
+    setOperator(undefined);
+    setDrafts({});
+    setCreatedRuleUids(new Set());
+    setListSkipped([]);
+    setLoading(true);
+    let list;
+    try {
+      list = await loadRuleList(ruleUrls);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load rules");
+      setLoading(false);
+      return;
+    }
+    setLoading(false);
+    setListSkipped(list.skipped);
+    if (list.rules.length === 0) {
+      setError("None of the rules in this link can be migrated. See the reasons below.");
+      return;
+    }
+    // Two links to the same rule (/view vs /edit) would share one form.
+    const rules = list.rules.filter((r, i, all) => all.findIndex((o) => o.uid === r.uid) === i);
+    setFolderRules(rules);
+    targetShown.current = true;
+    const first = rules[0];
+    const result = await loadRuleBySummary(first);
+    if (result && !("failed" in result)) {
+      setOperator(extractOperator(result));
+      setView("operator");
+    } else if (!sessionLost.current) {
+      // Same fallback as a failed Previous/Next: the notice card shows the
+      // error and keeps the nav to the other rules.
+      setNoticeRule(first);
+      setView("migrated-notice");
+    }
+  };
+
+  const handleViewEntireFolder = async () => {
+    if (!evaluation?.folder_uid) return;
+    const previous = linkTarget;
+    const ruleUrl = previous?.kind === "rule" ? previous.url : undefined;
+    const loaded = await handleLoadFolder(folderUrlFor(evaluation.folder_uid, ruleUrl));
+    if (loaded) {
+      // The folder walk starts clean; the policy stays, as it's per session.
+      setEvaluation(null);
+      setDrafts({});
+      setCreatedRuleUids(new Set());
+      setDestFolderUrl("");
+    } else if (!sessionLost.current) {
+      // Refresh and re-login should reopen the rule, not the failed folder.
+      setLinkTarget(previous);
+    }
+  };
+
   // "Load into migration form" from the v2 review view is replaced by the
   // in-place Edit flow (handleEditReviewRule → v2-edit view).
 
-  const handleLoadFolder = async (folderUrl: string) => {
+  const handleLoadFolder = async (folderUrl: string): Promise<boolean> => {
+    setLinkTarget(isHttpUrl(folderUrl) ? { kind: "folder", url: folderUrl } : null);
     resetFormState();
     setLoading(true);
     try {
@@ -269,10 +393,13 @@ function App() {
       setOverviewError(null);
       setSessionCreatedUids(new Set());
       setLoading(false);
+      targetShown.current = true;
       setView("folder-overview");
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load folder");
       setLoading(false);
+      return false;
     }
   };
 
@@ -342,6 +469,7 @@ function App() {
 
   // Leave the folder overview for the load view (load a different folder/rule).
   const handleBackToLoadFromOverview = () => {
+    setLinkTarget(null);
     setView("load");
     setClassified(null);
     setOverviewFolderUrl("");
@@ -639,6 +767,7 @@ function App() {
   };
 
   const handleStartCreateRule = () => {
+    setLinkTarget(null);
     setView("create-input");
     setError(null);
     setCreateFolderUrl("");
@@ -857,6 +986,32 @@ function App() {
   //    load is in flight the loading copy shows instead.
   const noticeMigrated = noticeRule?.migrated === true;
 
+  // Login-page line when a rule/folder is waiting to open. The rule's name is
+  // never taken from the link: anyone can edit a link.
+  const fromInitialLink =
+    !targetShown.current &&
+    initialLink.status === "ok" &&
+    JSON.stringify(initialLink.target) === JSON.stringify(linkTarget);
+  const loginNotice = linkTarget
+    ? (fromInitialLink ? LINK_LOGIN_NOTICE : REOPEN_LOGIN_NOTICE)[linkTarget.kind]
+    : undefined;
+
+  const listMode = linkTarget?.kind === "rules";
+  const skippedCard = listMode && listSkipped.length > 0 && (
+    <div className="card">
+      <h3>
+        {listSkipped.length} rule{listSkipped.length === 1 ? "" : "s"} from your link left out
+      </h3>
+      <ul>
+        {listSkipped.map((s) => (
+          <li key={s.rule_url}>
+            {s.message} <span className="help-text">({s.rule_url})</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+
   return (
     <div className="app">
       <header className="app-header">
@@ -871,7 +1026,7 @@ function App() {
         )}
       </header>
       <main>
-        {view === "login" && <LoginForm onLogin={handleLogin} />}
+        {view === "login" && <LoginForm onLogin={handleLogin} notice={loginNotice} />}
         {view === "load" && (
           <>
             <RuleUrlInput
@@ -889,6 +1044,7 @@ function App() {
               </button>
             </div>
             {error && <div className="card error">{error}</div>}
+            {skippedCard}
           </>
         )}
         {view === "create-input" && (
@@ -996,6 +1152,7 @@ function App() {
                 </div>
               </div>
             )}
+            {skippedCard}
             <div className="card migrated-notice">
               {loading ? (
                 <>
@@ -1095,6 +1252,9 @@ function App() {
                 </div>
               </div>
             )}
+            {skippedCard}
+            {/* "View entire folder" failed: the rule's form stays open. */}
+            {!isFolderMode && evaluation && error && <div className="card error">{error}</div>}
             {/* Rule load in flight or failed: evaluation is null, the form
                 can't render — show loading/error with the nav intact. */}
             {!evaluation && loading && <div className="card">Loading rule...</div>}
@@ -1116,6 +1276,10 @@ function App() {
               ruleCreated={evaluation ? createdRuleUids.has(evaluation.rule_uid) : false}
               destFolderUrl={destFolderUrl}
               onDestFolderUrlChange={setDestFolderUrl}
+              onViewFolder={
+                !isFolderMode && evaluation.folder_uid ? () => void handleViewEntireFolder() : undefined
+              }
+              viewFolderLoading={loading}
             />
             )}
             {/* Batch boundary (§7.2): the batch card sits on the last
@@ -1152,8 +1316,9 @@ function App() {
                   </button>
                 </div>
                 <p className="help-text">
-                  This will create a v2 rule for every not-yet-migrated rule in the folder. The
-                  second button also deletes each original rule after its v2 copy is created.
+                  This will create a v2 rule for every not-yet-migrated rule in{" "}
+                  {listMode ? "this list" : "the folder"}. The second button also deletes each
+                  original rule after its v2 copy is created.
                 </p>
                 <p className="help-text danger-text">
                   The delete action is destructive and cannot be undone.
@@ -1197,6 +1362,18 @@ function App() {
     </div>
   );
 }
+
+const LINK_LOGIN_NOTICE: Record<DeepLinkTarget["kind"], string> = {
+  rule: "Log in to open the rule you clicked in alerts-bi.",
+  rules: "Log in to open the rules you selected in alerts-bi.",
+  folder: "Log in to open the folder from your link.",
+};
+
+const REOPEN_LOGIN_NOTICE: Record<DeepLinkTarget["kind"], string> = {
+  rule: "Log in to reopen the rule you had open.",
+  rules: "Log in to reopen the rules you had open.",
+  folder: "Log in to reopen the folder you had open.",
+};
 
 function extractOperator(evaluation: EvaluateResponse): string | undefined {
   return evaluation.fields.find((f) => f.name === "Appchi-$operator")?.observed_value ?? undefined;

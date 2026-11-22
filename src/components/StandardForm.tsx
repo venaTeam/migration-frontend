@@ -27,6 +27,9 @@ interface StandardFormProps {
   isCreateMode?: boolean;
   destFolderUrl?: string;
   onDestFolderUrlChange?: (url: string) => void;
+  /** Single-rule mode: open the rule's whole folder. */
+  onViewFolder?: () => void;
+  viewFolderLoading?: boolean;
 }
 
 export const StandardForm = forwardRef<StandardFormRef, StandardFormProps>(
@@ -45,6 +48,8 @@ export const StandardForm = forwardRef<StandardFormRef, StandardFormProps>(
       isCreateMode = false,
       destFolderUrl: destFolderUrlProp,
       onDestFolderUrlChange,
+      onViewFolder,
+      viewFolderLoading = false,
     },
     ref
   ) {
@@ -160,6 +165,11 @@ export const StandardForm = forwardRef<StandardFormRef, StandardFormProps>(
         {!isCreateMode && !isFolderMode && (
           <div className="form-header">
             <h2>{evaluation.rule_title || evaluation.rule_uid}</h2>
+            {onViewFolder && (
+              <button type="button" className="secondary" onClick={onViewFolder} disabled={viewFolderLoading}>
+                {viewFolderLoading ? "Loading folder…" : "View entire folder"}
+              </button>
+            )}
           </div>
         )}
         {onReturn && (
