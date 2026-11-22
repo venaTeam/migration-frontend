@@ -15,7 +15,6 @@ export const MAX_LINK_RULES = 50;
 
 const RULE_PARAM = "rule_url";
 const FOLDER_PARAM = "folder_url";
-const STASH_KEY = "migration.deepLinkTarget";
 
 export function isHttpUrl(value: string): boolean {
   try {
@@ -75,54 +74,14 @@ export function hrefWithTarget(href: string, target: DeepLinkTarget | null): str
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-/** Grafana folder URL on the rule's host; the bare UID when the rule has no http(s) URL. */
+/**
+ * Grafana folder URL on the rule's host, keeping a sub-path Grafana is served
+ * under (e.g. /grafana). The bare UID when the rule has no http(s) URL.
+ */
 export function folderUrlFor(folderUid: string, ruleUrl: string | undefined): string {
   if (!ruleUrl || !isHttpUrl(ruleUrl)) return folderUid;
-  return `${new URL(ruleUrl).origin}/dashboards/f/${encodeURIComponent(folderUid)}`;
-}
-
-function sessionStore(): Storage | null {
-  try {
-    return window.sessionStorage;
-  } catch {
-    return null;
-  }
-}
-
-export function stashTarget(target: DeepLinkTarget, storage: Storage | null = sessionStore()): void {
-  try {
-    storage?.setItem(STASH_KEY, JSON.stringify(target));
-  } catch {
-    // Storage blocked: the URL still carries the target.
-  }
-}
-
-export function readStashedTarget(storage: Storage | null = sessionStore()): DeepLinkTarget | null {
-  try {
-    const raw = storage?.getItem(STASH_KEY);
-    if (!raw) return null;
-    const value = JSON.parse(raw) as { kind?: unknown; url?: unknown; urls?: unknown };
-    if ((value.kind === "rule" || value.kind === "folder") && typeof value.url === "string" && isHttpUrl(value.url)) {
-      return { kind: value.kind, url: value.url };
-    }
-    if (
-      value.kind === "rules" &&
-      Array.isArray(value.urls) &&
-      value.urls.length > 0 &&
-      value.urls.every((u) => typeof u === "string" && isHttpUrl(u))
-    ) {
-      return { kind: "rules", urls: value.urls as string[] };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-export function clearStashedTarget(storage: Storage | null = sessionStore()): void {
-  try {
-    storage?.removeItem(STASH_KEY);
-  } catch {
-    // Nothing to clear.
-  }
+  const url = new URL(ruleUrl);
+  const alerting = url.pathname.indexOf("/alerting/");
+  const prefix = alerting > 0 ? url.pathname.slice(0, alerting) : "";
+  return `${url.origin}${prefix}/dashboards/f/${encodeURIComponent(folderUid)}`;
 }

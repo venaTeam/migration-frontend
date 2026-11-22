@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_LINK_RULES,
-  clearStashedTarget,
   folderUrlFor,
   hrefWithTarget,
   isHttpUrl,
   parseDeepLink,
-  readStashedTarget,
-  stashTarget,
 } from "./deepLink";
 
 const RULE = "https://grafana.example/alerting/grafana/abc123/view";
@@ -19,20 +16,6 @@ function search(params: Record<string, string | string[]>): string {
     for (const v of Array.isArray(value) ? value : [value]) sp.append(key, v);
   }
   return `?${sp.toString()}`;
-}
-
-function memoryStorage(): Storage {
-  const data = new Map<string, string>();
-  return {
-    get length() {
-      return data.size;
-    },
-    clear: () => data.clear(),
-    getItem: (key) => data.get(key) ?? null,
-    key: (i) => [...data.keys()][i] ?? null,
-    removeItem: (key) => void data.delete(key),
-    setItem: (key, value) => void data.set(key, value),
-  };
 }
 
 describe("isHttpUrl", () => {
@@ -175,6 +158,12 @@ describe("folderUrlFor", () => {
     expect(folderUrlFor("fold1", RULE)).toBe("https://grafana.example/dashboards/f/fold1");
   });
 
+  it("keeps a Grafana sub-path", () => {
+    expect(folderUrlFor("fold1", "https://h.example/grafana/alerting/grafana/abc/view")).toBe(
+      "https://h.example/grafana/dashboards/f/fold1"
+    );
+  });
+
   it("encodes the folder UID", () => {
     expect(folderUrlFor("a/b", RULE)).toBe("https://grafana.example/dashboards/f/a%2Fb");
   });
@@ -182,58 +171,5 @@ describe("folderUrlFor", () => {
   it("falls back to the bare UID without an http(s) rule URL", () => {
     expect(folderUrlFor("fold1", "abc123")).toBe("fold1");
     expect(folderUrlFor("fold1", undefined)).toBe("fold1");
-  });
-});
-
-describe("stash", () => {
-  it("stores, reads and clears a target", () => {
-    const storage = memoryStorage();
-    expect(readStashedTarget(storage)).toBeNull();
-    stashTarget({ kind: "folder", url: FOLDER }, storage);
-    expect(readStashedTarget(storage)).toEqual({ kind: "folder", url: FOLDER });
-    clearStashedTarget(storage);
-    expect(readStashedTarget(storage)).toBeNull();
-  });
-
-  it("stores and reads a rule list", () => {
-    const storage = memoryStorage();
-    stashTarget({ kind: "rules", urls: [RULE, FOLDER] }, storage);
-    expect(readStashedTarget(storage)).toEqual({ kind: "rules", urls: [RULE, FOLDER] });
-    storage.setItem(
-      "migration.deepLinkTarget",
-      JSON.stringify({ kind: "rules", urls: [RULE, "javascript:alert(1)"] })
-    );
-    expect(readStashedTarget(storage)).toBeNull();
-  });
-
-  it("ignores corrupt or unsafe stored values", () => {
-    const storage = memoryStorage();
-    storage.setItem("migration.deepLinkTarget", "{not json");
-    expect(readStashedTarget(storage)).toBeNull();
-    storage.setItem(
-      "migration.deepLinkTarget",
-      JSON.stringify({ kind: "rule", url: "javascript:alert(1)" })
-    );
-    expect(readStashedTarget(storage)).toBeNull();
-    storage.setItem("migration.deepLinkTarget", JSON.stringify({ kind: "other", url: RULE }));
-    expect(readStashedTarget(storage)).toBeNull();
-  });
-
-  it("never throws when storage is unavailable", () => {
-    const broken = {
-      getItem: () => {
-        throw new Error("blocked");
-      },
-      setItem: () => {
-        throw new Error("blocked");
-      },
-      removeItem: () => {
-        throw new Error("blocked");
-      },
-    } as unknown as Storage;
-    expect(() => stashTarget({ kind: "rule", url: RULE }, broken)).not.toThrow();
-    expect(readStashedTarget(broken)).toBeNull();
-    expect(() => clearStashedTarget(broken)).not.toThrow();
-    expect(readStashedTarget(null)).toBeNull();
   });
 });

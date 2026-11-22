@@ -2,6 +2,9 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
+# npm mirror for air-gapped builds; CI passes it as a build arg.
+ARG NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
+
 COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 

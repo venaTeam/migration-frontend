@@ -21,13 +21,10 @@ import {
 } from "./api/client";
 import { buildRulePayload, validateFormValues } from "./utils/ruleHelpers";
 import {
-  clearStashedTarget,
   folderUrlFor,
   hrefWithTarget,
   isHttpUrl,
   parseDeepLink,
-  readStashedTarget,
-  stashTarget,
   type DeepLinkTarget,
 } from "./utils/deepLink";
 import type { EvaluateResponse, StandardSchema } from "./types";
@@ -83,6 +80,10 @@ function App() {
     initialLink.status === "ok" ? initialLink.target : null
   );
   const linkOpened = useRef(false);
+  // A rule or folder has been shown at least once (login text says "reopen").
+  const targetShown = useRef(false);
+  // Set by the 401 handler: a failed load must not replace the login view.
+  const sessionLost = useRef(false);
   const [evaluation, setEvaluation] = useState<EvaluateResponse | null>(null);
   const [error, setError] = useState<string | null>(
     initialLink.status === "invalid" ? initialLink.message : null
@@ -149,8 +150,6 @@ function App() {
     } catch {
       // Address bar not updated; in-app state is still correct.
     }
-    if (target) stashTarget(target);
-    else clearStashedTarget();
   };
 
   const openTarget = (target: DeepLinkTarget) => {
@@ -173,16 +172,17 @@ function App() {
   }, []);
 
   const handleLogin = () => {
+    sessionLost.current = false;
     setView("load");
     setError(null);
-    const target = linkTarget ?? readStashedTarget();
-    if (target) void openTarget(target);
+    if (linkTarget) void openTarget(linkTarget);
   };
 
   // Any API request answered 401: the backend session is gone (expired or
   // backend restarted) — land on the login view with a clear message
   // instead of a raw error. State resets like a logout.
   setUnauthorizedHandler(() => {
+    sessionLost.current = true;
     setView("login");
     setError("Session expired or invalid. Please log in again.");
     setEvaluation(null);
@@ -310,6 +310,7 @@ function App() {
     setCreatedRuleUids(new Set());
     const result = await loadRuleBySummary({ uid: "", title: "", rule_url: ruleUrl });
     if (result && !("failed" in result)) {
+      targetShown.current = true;
       setOperator(extractOperator(result));
       // Single rule by URL (plan §7.3): reviewing is legitimate, so the form
       // opens normally. A migrated rule gets a warning banner above the form.
@@ -344,13 +345,16 @@ function App() {
       setError("None of the rules in this link can be migrated. See the reasons below.");
       return;
     }
-    setFolderRules(list.rules);
-    const first = list.rules[0];
+    // Two links to the same rule (/view vs /edit) would share one form.
+    const rules = list.rules.filter((r, i, all) => all.findIndex((o) => o.uid === r.uid) === i);
+    setFolderRules(rules);
+    targetShown.current = true;
+    const first = rules[0];
     const result = await loadRuleBySummary(first);
     if (result && !("failed" in result)) {
       setOperator(extractOperator(result));
       setView("operator");
-    } else {
+    } else if (!sessionLost.current) {
       // Same fallback as a failed Previous/Next: the notice card shows the
       // error and keeps the nav to the other rules.
       setNoticeRule(first);
@@ -358,16 +362,27 @@ function App() {
     }
   };
 
-  const handleViewEntireFolder = () => {
+  const handleViewEntireFolder = async () => {
     if (!evaluation?.folder_uid) return;
-    const ruleUrl = linkTarget?.kind === "rule" ? linkTarget.url : undefined;
-    void handleLoadFolder(folderUrlFor(evaluation.folder_uid, ruleUrl));
+    const previous = linkTarget;
+    const ruleUrl = previous?.kind === "rule" ? previous.url : undefined;
+    const loaded = await handleLoadFolder(folderUrlFor(evaluation.folder_uid, ruleUrl));
+    if (loaded) {
+      // The folder walk starts clean; the policy stays, as it's per session.
+      setEvaluation(null);
+      setDrafts({});
+      setCreatedRuleUids(new Set());
+      setDestFolderUrl("");
+    } else if (!sessionLost.current) {
+      // Refresh and re-login should reopen the rule, not the failed folder.
+      setLinkTarget(previous);
+    }
   };
 
   // "Load into migration form" from the v2 review view is replaced by the
   // in-place Edit flow (handleEditReviewRule → v2-edit view).
 
-  const handleLoadFolder = async (folderUrl: string) => {
+  const handleLoadFolder = async (folderUrl: string): Promise<boolean> => {
     setLinkTarget(isHttpUrl(folderUrl) ? { kind: "folder", url: folderUrl } : null);
     resetFormState();
     setLoading(true);
@@ -378,10 +393,13 @@ function App() {
       setOverviewError(null);
       setSessionCreatedUids(new Set());
       setLoading(false);
+      targetShown.current = true;
       setView("folder-overview");
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load folder");
       setLoading(false);
+      return false;
     }
   };
 
@@ -971,7 +989,9 @@ function App() {
   // Login-page line when a rule/folder is waiting to open. The rule's name is
   // never taken from the link: anyone can edit a link.
   const fromInitialLink =
-    initialLink.status === "ok" && JSON.stringify(initialLink.target) === JSON.stringify(linkTarget);
+    !targetShown.current &&
+    initialLink.status === "ok" &&
+    JSON.stringify(initialLink.target) === JSON.stringify(linkTarget);
   const loginNotice = linkTarget
     ? (fromInitialLink ? LINK_LOGIN_NOTICE : REOPEN_LOGIN_NOTICE)[linkTarget.kind]
     : undefined;
@@ -1256,7 +1276,9 @@ function App() {
               ruleCreated={evaluation ? createdRuleUids.has(evaluation.rule_uid) : false}
               destFolderUrl={destFolderUrl}
               onDestFolderUrlChange={setDestFolderUrl}
-              onViewFolder={!isFolderMode && evaluation.folder_uid ? handleViewEntireFolder : undefined}
+              onViewFolder={
+                !isFolderMode && evaluation.folder_uid ? () => void handleViewEntireFolder() : undefined
+              }
               viewFolderLoading={loading}
             />
             )}
