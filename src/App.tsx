@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CreateRuleInput } from "./components/CreateRuleInput";
 import { FolderOverview } from "./components/FolderOverview";
 import { LoginForm } from "./components/LoginForm";
@@ -19,6 +19,15 @@ import {
   updateRuleView,
 } from "./api/client";
 import { buildRulePayload, validateFormValues } from "./utils/ruleHelpers";
+import {
+  clearStashedTarget,
+  hrefWithTarget,
+  isHttpUrl,
+  parseDeepLink,
+  readStashedTarget,
+  stashTarget,
+  type DeepLinkTarget,
+} from "./utils/deepLink";
 import type { EvaluateResponse, StandardSchema } from "./types";
 import type { ClassifiedFolderRules, FolderRuleSummary } from "./api/client";
 
@@ -64,8 +73,18 @@ function App() {
   // the first API call answers 401 and the central handler in apiFetch
   // drops to the login view — no mount-time probe needed.
   const [view, setView] = useState<View>("load");
+  // The ?rule_url= / ?folder_url= the page was opened with (e.g. from alerts-bi).
+  const [initialLink] = useState(() => parseDeepLink(window.location.search));
+  // What the address bar points at: the rule/folder being viewed, kept across a
+  // 401 so it reopens after login. Cleared on the way back to the paste box.
+  const [linkTarget, setLinkTargetState] = useState<DeepLinkTarget | null>(
+    initialLink.status === "ok" ? initialLink.target : null
+  );
+  const linkOpened = useRef(false);
   const [evaluation, setEvaluation] = useState<EvaluateResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(
+    initialLink.status === "invalid" ? initialLink.message : null
+  );
   const [loading, setLoading] = useState(false);
   const [cloneLoading, setCloneLoading] = useState(false);
   const [cloneError, setCloneError] = useState<string | null>(null);
@@ -119,9 +138,38 @@ function App() {
   // racing loads can pair rule A's content with rule B's header.
   const editingBlocked = loading || reviewRuleLoading;
 
+  const setLinkTarget = (target: DeepLinkTarget | null) => {
+    setLinkTargetState(target);
+    try {
+      window.history.replaceState(window.history.state, "", hrefWithTarget(window.location.href, target));
+    } catch {
+      // Address bar not updated; in-app state is still correct.
+    }
+    if (target) stashTarget(target);
+    else clearStashedTarget();
+  };
+
+  const openTarget = (target: DeepLinkTarget) =>
+    target.kind === "rule" ? handleLoadRule(target.url) : handleLoadFolder(target.url);
+
+  // Open the link once on page load. Without a session the load answers 401,
+  // the login view shows, and handleLogin reopens the target.
+  useEffect(() => {
+    if (linkOpened.current) return;
+    linkOpened.current = true;
+    if (initialLink.status === "ok") {
+      void openTarget(initialLink.target);
+    } else {
+      // No link (or a bad one, already shown as the error): plain paste box.
+      setLinkTarget(null);
+    }
+  }, []);
+
   const handleLogin = () => {
     setView("load");
     setError(null);
+    const target = linkTarget ?? readStashedTarget();
+    if (target) void openTarget(target);
   };
 
   // Any API request answered 401: the backend session is gone (expired or
@@ -150,6 +198,7 @@ function App() {
     // Destroy the SERVER session too — it holds the Grafana password.
     // Fire-and-forget: sign-out must proceed even if the call fails.
     void logout().catch(() => {});
+    setLinkTarget(null);
     setView("login");
     setEvaluation(null);
     setError(null);
@@ -197,6 +246,7 @@ function App() {
       setView("folder-overview");
       void refreshOverview();
     } else {
+      setLinkTarget(null);
       setView("load");
     }
   };
@@ -208,6 +258,7 @@ function App() {
       setView("folder-overview");
       void refreshOverview();
     } else {
+      setLinkTarget(null);
       setView("load");
     }
   };
@@ -242,6 +293,8 @@ function App() {
   };
 
   const handleLoadRule = async (ruleUrl: string) => {
+    // A pasted UID has no URL to keep in the address bar.
+    setLinkTarget(isHttpUrl(ruleUrl) ? { kind: "rule", url: ruleUrl } : null);
     setFolderRules(null);
     setFolderIndex(0);
     setOperator(undefined);
@@ -260,6 +313,7 @@ function App() {
   // in-place Edit flow (handleEditReviewRule → v2-edit view).
 
   const handleLoadFolder = async (folderUrl: string) => {
+    setLinkTarget(isHttpUrl(folderUrl) ? { kind: "folder", url: folderUrl } : null);
     resetFormState();
     setLoading(true);
     try {
@@ -342,6 +396,7 @@ function App() {
 
   // Leave the folder overview for the load view (load a different folder/rule).
   const handleBackToLoadFromOverview = () => {
+    setLinkTarget(null);
     setView("load");
     setClassified(null);
     setOverviewFolderUrl("");
@@ -639,6 +694,7 @@ function App() {
   };
 
   const handleStartCreateRule = () => {
+    setLinkTarget(null);
     setView("create-input");
     setError(null);
     setCreateFolderUrl("");
@@ -857,6 +913,17 @@ function App() {
   //    load is in flight the loading copy shows instead.
   const noticeMigrated = noticeRule?.migrated === true;
 
+  // Login-page line when a rule/folder is waiting to open. The rule's name is
+  // never taken from the link: anyone can edit a link.
+  const fromInitialLink = initialLink.status === "ok" && initialLink.target.url === linkTarget?.url;
+  const loginNotice = !linkTarget
+    ? undefined
+    : fromInitialLink
+    ? linkTarget.kind === "rule"
+      ? "Log in to open the rule you clicked in alerts-bi."
+      : "Log in to open the folder from your link."
+    : `Log in to reopen the ${linkTarget.kind} you had open.`;
+
   return (
     <div className="app">
       <header className="app-header">
@@ -871,7 +938,7 @@ function App() {
         )}
       </header>
       <main>
-        {view === "login" && <LoginForm onLogin={handleLogin} />}
+        {view === "login" && <LoginForm onLogin={handleLogin} notice={loginNotice} />}
         {view === "load" && (
           <>
             <RuleUrlInput

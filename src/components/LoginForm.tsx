@@ -3,9 +3,11 @@ import { login } from "../api/client";
 
 interface LoginFormProps {
   onLogin: () => void;
+  /** Shown under the intro, e.g. when a linked rule opens after login. */
+  notice?: string;
 }
 
-export function LoginForm({ onLogin }: LoginFormProps) {
+export function LoginForm({ onLogin, notice }: LoginFormProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +31,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     <div className="card">
       <h1>Alert Rule Migration</h1>
       <p>Sign in with your Grafana credentials to migrate alert rules to the new standard.</p>
+      {notice && <p className="help-text">{notice}</p>}
       <form onSubmit={handleSubmit}>
         <div className="field">
           <label htmlFor="username">Username</label>
